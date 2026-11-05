@@ -1,7 +1,7 @@
 ---
 title: Observability
 description: Send traces, metrics, and logs from DocsGPT to any OpenTelemetry-compatible backend (Axiom, Honeycomb, Grafana, Datadog, Jaeger, etc.).
-lastUpdated: 2026-11-02
+lastUpdated: 2026-11-05
 ---
 
 import { Callout } from 'nextra/components'
@@ -161,7 +161,8 @@ user's guide to those pages.
 Stored traces keep short previews — tool arguments and results, retrieved
 chunk titles and snippets (with each chunk's relevance where the decision
 model scored it), rephrased queries, answer excerpts — truncated
-and with secret-named fields redacted. Full prompts are never stored. When a
+and with secret-named fields redacted. Full prompts are not collected by default;
+OTel content capture additionally keeps bounded model-message excerpts. When a
 guardrail fires during a request, every preview is dropped from its trace.
 
 ```bash
@@ -172,6 +173,49 @@ TRACES_MAX_SPANS=500           # steps kept per trace; the rest are counted
 TRACES_RETENTION_DAYS=30       # a daily task deletes older traces
 TRACES_OTEL_EXPORT=true        # also export traces as OTel GenAI spans
 ```
+
+### Convergent
+
+The backend includes `convergent-sdk==0.0.11`. It connects to the existing
+trace replay, rather than installing a second model/tool instrumentor. Classic,
+Agentic, Research and Workflow agents (including workflow node agents) retain
+one span per agent run and per model/tool call. The streaming reader carries
+its enclosing agent or research-phase parent into its worker thread.
+
+Create an ingestion API key in your Convergent workspace settings and export it
+into **each backend API and Celery worker process** that runs agents:
+
+```bash
+export CONVERGENT_API_KEY="<workspace ingestion key>"
+# Optional: otherwise docsgpt.version.get_version() supplies the release.
+export CONVERGENT_RELEASE="<deployment version>"
+# Optional, sensitive: include bounded, redacted message and tool previews.
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=span_only
+```
+
+Restart those processes after configuring their environment. A `.env` entry must
+be loaded into the process environment (for example with `dotenv run --`);
+Convergent does not read DocsGPT's Pydantic settings object. No additional
+`opentelemetry-instrument` launcher is required for Convergent. An existing
+OpenTelemetry provider and its exporters are preserved; they also receive the
+new standard GenAI attributes. Without a Convergent destination, the existing
+OTel setup is unchanged.
+
+For offline development, `CONVERGENT_SPANS_DIR` writes `spans.jsonl` without a
+key or network calls. Keep this directory private: opting into content includes
+user requests, source/attachment text excerpts, final-answer excerpts and tool
+arguments/results. All content still obeys `TRACES_CAPTURE_CONTENT`,
+`TRACES_PREVIEW_CHARS` and guardrail suppression. Large inputs and outputs are
+truncated; this is not a complete conversation archive. Native image/file blocks
+are replaced with labels. **Original uploads, retrieved files and generated
+artifacts are not uploaded to Convergent** by this integration.
+
+Keep `TRACES_ENABLED` and `TRACES_OTEL_EXPORT` enabled (their defaults).
+The existing request lifecycle finishes and exports the trace; scripts that
+manually use `tracing.start_trace` should use `tracing.activate`, finish with
+`tracing.flush`, then call `convergent.flush()` before exiting. Direct agent
+calls outside an active DocsGPT trace do not create one automatically.
+A local recording confirms span creation, not hosted ingestion or visibility.
 
 ### GenAI spans and metrics
 
@@ -271,8 +315,10 @@ backend may be a third party. Opt in with the standard variable:
 OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY
 ```
 
-This adds the same redacted previews the app stores (for example
-`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`).
+This adds redacted previews, including `gen_ai.input.messages` and
+`gen_ai.output.messages` on agents and models, plus
+`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` on tools. Model
+message excerpts are collected only while this opt-in is enabled.
 
 <Callout type="info" emoji="ℹ️">
   GenAI spans are exported when the request finishes, with their original

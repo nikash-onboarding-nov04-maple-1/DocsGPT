@@ -13,8 +13,8 @@ written as literals rather than imported from the semconv package. Prompt and
 tool content is exported only when
 ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` opts in.
 
-Nothing here runs unless an OTel SDK is installed as the global provider (for
-example by launching under ``opentelemetry-instrument``).
+Convergent is initialized lazily when a Convergent destination is configured;
+otherwise the existing global OTel provider is used unchanged.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 
 from docsgpt.core.settings import settings
 from docsgpt.tracing.core import (
+    KIND_AGENT,
     KIND_DECISION,
     KIND_EMBEDDING,
     KIND_LLM,
@@ -116,6 +117,13 @@ def _preview_attributes(kind: str, previews: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in previews.items():
         name = _TOOL_PREVIEW_ATTRIBUTES.get(key) if kind == KIND_TOOL else None
         out[name or f"docsgpt.preview.{key}"] = value if isinstance(value, str) else _attr_value(value)
+    if kind in (KIND_AGENT, KIND_LLM):
+        for key, direction, role in (("input", "input", "user"), ("output", "output", "assistant")):
+            value = previews.get(key + "_messages")
+            if value is None and previews.get(key) is not None:
+                value = [{"role": role, "parts": [{"type": "text", "content": previews[key]}]}]
+            if value is not None:
+                out[f"gen_ai.{direction}.messages"] = json.dumps(value, ensure_ascii=False, default=str)
     return out
 
 
@@ -161,7 +169,9 @@ def export_trace(trace: Trace, tracer_provider: Any = None) -> Optional[str]:
     from opentelemetry import trace as ot_trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
 
-    provider = tracer_provider or ot_trace.get_tracer_provider()
+    from docsgpt.tracing.convergent import configured_provider
+
+    provider = tracer_provider or configured_provider() or ot_trace.get_tracer_provider()
     if _is_noop(provider):
         return None
     tracer = provider.get_tracer(_INSTRUMENTATION_NAME)
@@ -180,7 +190,7 @@ def export_trace(trace: Trace, tracer_provider: Any = None) -> Optional[str]:
     for span in trace.spans:
         parent = exported.get(span.parent_id, root)
         attributes = dict(span.attributes)
-        if trace.conversation_id and span.kind in (KIND_LLM, KIND_TOOL):
+        if trace.conversation_id and span.kind in (KIND_AGENT, KIND_LLM, KIND_TOOL):
             attributes.setdefault("gen_ai.conversation.id", trace.conversation_id)
         if span.status and span.status not in (STATUS_OK, STATUS_ERROR):
             attributes["docsgpt.status"] = span.status

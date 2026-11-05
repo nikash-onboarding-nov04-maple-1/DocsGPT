@@ -123,6 +123,7 @@ dependencies = [
   "uvicorn-worker>=0.4,<1",
   "websocket-client>=1.9.0,<2",
   "werkzeug>=3.1.9,<4",
+  "convergent-sdk==0.0.11",
 ]
 
 [project.optional-dependencies]
