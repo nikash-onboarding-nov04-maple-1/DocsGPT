@@ -5,6 +5,7 @@ from typing import Any, Dict
 from docsgpt.llm.tool_images import IMAGE_TOKENS
 from docsgpt.pricing import compute_cost_usd
 from docsgpt.tracing.llm import finish_llm_call, start_llm_span
+from docsgpt.tracing.messages import record_input, record_output
 from docsgpt.storage.db.repositories.token_usage import TokenUsageRepository
 from docsgpt.storage.db.session import db_session
 from docsgpt.utils import num_tokens_from_object_or_list, num_tokens_from_string
@@ -313,6 +314,7 @@ def gen_token_usage(func):
             messages, tools, usage_attachments, dispatch, kwargs
         )
         span = start_llm_span(self, model, stream=False, tools=tools)
+        record_input(span, messages)
         started_at = time.monotonic()
         error: BaseException | None = None
         result = None
@@ -330,6 +332,7 @@ def gen_token_usage(func):
             _add_to_running_total(self, call_usage)
             # A non-streaming call has no first-token moment; ttft stays NULL.
             cost = _persist_call_usage(self, call_usage, duration_ms=duration_ms)
+            record_output(span, self, result, stream=False)
             finish_llm_call(
                 span,
                 self,
@@ -384,6 +387,7 @@ def stream_token_usage(func):
         # This body runs on the first ``next()``, not at ``gen_stream()``
         # time, so the span starts when the provider call really does.
         span = start_llm_span(self, model, stream=True, tools=tools)
+        record_input(span, messages)
         try:
             result = func(self, model, messages, stream, tools, **kwargs)
             stream_iter = iter(result)
@@ -433,6 +437,7 @@ def stream_token_usage(func):
             cost = _persist_call_usage(
                 self, call_usage, duration_ms=duration_ms, ttft_ms=ttft_ms
             )
+            record_output(span, self, batch, stream=True)
             finish_llm_call(
                 span,
                 self,

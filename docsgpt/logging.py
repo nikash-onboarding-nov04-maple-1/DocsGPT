@@ -34,6 +34,7 @@ class LogContext:
         # same summary that ``run_agent_logic`` used to log only for the
         # Celery webhook path.
         self.answer_length = 0
+        self.answer_preview = ""
         self.thought_length = 0
         self.source_count = 0
         self.tool_call_count = 0
@@ -178,6 +179,7 @@ def log_activity() -> Callable:
             tracing.bind_if_unset(activity_id=activity_id)
             span = start_agent_span(args[0], agent_id=agent_id, model=model, endpoint=endpoint)
 
+            span.preview("input", query or (args[1] if len(args) > 1 else ""))
             error: BaseException | None = None
             completed = False
             try:
@@ -246,6 +248,7 @@ def start_agent_span(
             k: v
             for k, v in {
                 "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.name": label,
                 "gen_ai.agent.id": str(agent_id) if agent_id else None,
                 "gen_ai.request.model": str(model) if model else None,
                 "docsgpt.agent_type": label,
@@ -261,6 +264,8 @@ def _end_agent_span(span: Any, context: "LogContext", *, error: BaseException | 
     """Close the agent span with the run's response aggregates and outcome."""
     if not span:
         return
+    output = context.answer_preview or context.stream_error or ("Completed." if completed else "Cancelled.")
+    span.preview("output", output)
     attributes = {
         "docsgpt.answer_chars": context.answer_length,
         "docsgpt.source_count": context.source_count,
@@ -326,6 +331,11 @@ def _accumulate_response_summary(item: Any, context: "LogContext") -> None:
         return
     if "answer" in item:
         context.answer_length += len(str(item["answer"]))
+        from docsgpt.core.settings import settings
+
+        if settings.TRACES_CAPTURE_CONTENT:
+            remaining = max(0, settings.TRACES_PREVIEW_CHARS - len(context.answer_preview))
+            context.answer_preview += str(item["answer"])[:remaining]
         return
     if "thought" in item:
         context.thought_length += len(str(item["thought"]))

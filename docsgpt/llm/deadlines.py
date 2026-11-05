@@ -135,8 +135,10 @@ def timed_stream(factory: Callable[[], Iterator[Any]], *, first_token: float, st
             if callable(close):
                 close()
 
+    from docsgpt.tracing import wrap
+
     context = copy_context()
-    reader = Thread(target=context.run, args=(produce,), name="llm-stream-reader", daemon=True)
+    reader = Thread(target=context.run, args=(wrap(produce),), name="llm-stream-reader", daemon=True)
     reader.start()
     timeout = first_token
     try:
